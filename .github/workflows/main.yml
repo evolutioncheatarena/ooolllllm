@@ -1,382 +1,229 @@
-name: Build OLLVM NDK r26d - Windows (Final)
+# =====================================================================
+# Build DreamSoule/ollvm17 (LLVM 17.0.6 + obfuscation passes) for Windows
+# Output: a portable clang+lld toolchain drop-in for Android NDK r26
+#
+# Obfuscation flags you can pass to clang (-mllvm -<flag>):
+#   -mllvm -fla -mllvm -bcf -mllvm -bcf_prob=80 -mllvm -bcf_loop=3
+#   -mllvm -sobf -mllvm -icall -mllvm -ibr -mllvm -igv
+#   -mllvm -sub -mllvm -sub_loop=3 -mllvm -split -mllvm -split_num=5
+#   -mllvm -fncmd   (enable function-name control: e.g. function_fla_bcf_())
+# =====================================================================
+name: Build OLLVM17 (Windows, for Android NDK r26)
 
 on:
   push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
+# Building clang+lld is heavy; raise the job cap. GHA max is 360 min.
+# Typical run time on windows-latest is ~1.5 to 3 hours.
 jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 360
-    
+
     steps:
-      # ============================================
-      # STEP 1: Download NDK FIRST
-      # ============================================
-      - name: Download NDK r26d
-        shell: cmd
-        run: |
-          echo =========================================
-          echo Downloading NDK r26d...
-          echo =========================================
-          curl -L --retry 5 --retry-delay 10 -o ndk.zip https://dl.google.com/android/repository/android-ndk-r26d-windows.zip
-          
-          if not exist ndk.zip (
-            echo ❌ Download failed!
-            exit /b 1
-          )
-          
-          echo Extracting NDK...
-          powershell -command "Expand-Archive -Path ndk.zip -DestinationPath ndk -Force"
-          if errorlevel 1 exit /b 1
-          echo ✅ NDK ready!
-          dir ndk\android-ndk-r26d
-
-      # ============================================
-      # STEP 2: Clone LLVM 17.0.6
-      # ============================================
-      - name: Clone LLVM 17.0.6
+      # ---------------------------------------------------------------
+      # 0. Checkout (so the workflow file itself is in the workspace)
+      # ---------------------------------------------------------------
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          repository: llvm/llvm-project
-          ref: llvmorg-17.0.6
-          path: llvm-project
 
-      # ============================================
-      # STEP 3: Setup Python (required for Register step)
-      # ============================================
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      # ============================================
-      # STEP 4: Create OLLVM passes (HEADERS FIXED)
-      # ============================================
-      - name: Create OLLVM passes
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd llvm-project
-          mkdir -p llvm/lib/Transforms/Obfuscation
-          mkdir -p llvm/include/llvm/Transforms/Obfuscation
-          
-          echo "Creating OLLVM passes..."
-
-          # --- BogusControlFlow.h (FIXED) ---
-          cat > llvm/include/llvm/Transforms/Obfuscation/BogusControlFlow.h << 'EOF'
-          #ifndef LLVM_TRANSFORMS_OBFUSCATION_BOGUSCONTROLFLOW_H
-          #define LLVM_TRANSFORMS_OBFUSCATION_BOGUSCONTROLFLOW_H
-          #include "llvm/IR/PassManager.h"
-          namespace llvm {
-          class BogusControlFlow : public PassInfoMixin<BogusControlFlow> {
-          public:
-            PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
-            static bool isRequired() { return true; }
-          };
-          } // namespace llvm
-          #endif // LLVM_TRANSFORMS_OBFUSCATION_BOGUSCONTROLFLOW_H
-          EOF
-
-          # --- BogusControlFlow.cpp ---
-          cat > llvm/lib/Transforms/Obfuscation/BogusControlFlow.cpp << 'EOF'
-          #include "llvm/Transforms/Obfuscation/BogusControlFlow.h"
-          #include "llvm/IR/Function.h"
-          using namespace llvm;
-          PreservedAnalyses BogusControlFlow::run(Function &F, FunctionAnalysisManager &AM) {
-              if (F.isDeclaration()) return PreservedAnalyses::all();
-              return PreservedAnalyses::none();
-          }
-          EOF
-
-          # --- Flattening.h (FIXED) ---
-          cat > llvm/include/llvm/Transforms/Obfuscation/Flattening.h << 'EOF'
-          #ifndef LLVM_TRANSFORMS_OBFUSCATION_FLATTENING_H
-          #define LLVM_TRANSFORMS_OBFUSCATION_FLATTENING_H
-          #include "llvm/IR/PassManager.h"
-          namespace llvm {
-          class Flattening : public PassInfoMixin<Flattening> {
-          public:
-            PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
-            static bool isRequired() { return true; }
-          };
-          } // namespace llvm
-          #endif // LLVM_TRANSFORMS_OBFUSCATION_FLATTENING_H
-          EOF
-
-          # --- Flattening.cpp ---
-          cat > llvm/lib/Transforms/Obfuscation/Flattening.cpp << 'EOF'
-          #include "llvm/Transforms/Obfuscation/Flattening.h"
-          #include "llvm/IR/Function.h"
-          using namespace llvm;
-          PreservedAnalyses Flattening::run(Function &F, FunctionAnalysisManager &AM) {
-              if (F.isDeclaration()) return PreservedAnalyses::all();
-              return PreservedAnalyses::none();
-          }
-          EOF
-
-          # --- Substitution.h (FIXED) ---
-          cat > llvm/include/llvm/Transforms/Obfuscation/Substitution.h << 'EOF'
-          #ifndef LLVM_TRANSFORMS_OBFUSCATION_SUBSTITUTION_H
-          #define LLVM_TRANSFORMS_OBFUSCATION_SUBSTITUTION_H
-          #include "llvm/IR/PassManager.h"
-          namespace llvm {
-          class Substitution : public PassInfoMixin<Substitution> {
-          public:
-            PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
-            static bool isRequired() { return true; }
-          };
-          } // namespace llvm
-          #endif // LLVM_TRANSFORMS_OBFUSCATION_SUBSTITUTION_H
-          EOF
-
-          # --- Substitution.cpp ---
-          cat > llvm/lib/Transforms/Obfuscation/Substitution.cpp << 'EOF'
-          #include "llvm/Transforms/Obfuscation/Substitution.h"
-          #include "llvm/IR/Function.h"
-          using namespace llvm;
-          PreservedAnalyses Substitution::run(Function &F, FunctionAnalysisManager &AM) {
-              if (F.isDeclaration()) return PreservedAnalyses::all();
-              return PreservedAnalyses::none();
-          }
-          EOF
-
-          # --- StringObfuscation.h (FIXED) ---
-          cat > llvm/include/llvm/Transforms/Obfuscation/StringObfuscation.h << 'EOF'
-          #ifndef LLVM_TRANSFORMS_OBFUSCATION_STRINGOBFUSCATION_H
-          #define LLVM_TRANSFORMS_OBFUSCATION_STRINGOBFUSCATION_H
-          #include "llvm/IR/PassManager.h"
-          namespace llvm {
-          class StringObfuscation : public PassInfoMixin<StringObfuscation> {
-          public:
-            PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
-            static bool isRequired() { return true; }
-          };
-          } // namespace llvm
-          #endif // LLVM_TRANSFORMS_OBFUSCATION_STRINGOBFUSCATION_H
-          EOF
-
-          # --- StringObfuscation.cpp ---
-          cat > llvm/lib/Transforms/Obfuscation/StringObfuscation.cpp << 'EOF'
-          #include "llvm/Transforms/Obfuscation/StringObfuscation.h"
-          #include "llvm/IR/Module.h"
-          using namespace llvm;
-          PreservedAnalyses StringObfuscation::run(Module &M, ModuleAnalysisManager &AM) {
-              return PreservedAnalyses::none();
-          }
-          EOF
-
-          echo "✅ All passes created (headers fixed)"
-          
-          # Verify all files exist
-          for f in BogusControlFlow Flattening Substitution StringObfuscation; do
-            if [ ! -f "llvm/include/llvm/Transforms/Obfuscation/${f}.h" ] || [ ! -f "llvm/lib/Transforms/Obfuscation/${f}.cpp" ]; then
-              echo "❌ Missing file: ${f}"
-              exit 1
-            fi
-          done
-          echo "✅ All files verified"
-
-      # ============================================
-      # STEP 5: Register passes in LLVM (FIXED for TransformUtils)
-      # ============================================
-      - name: Register OLLVM passes
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd llvm-project
-          
-          if command -v python3 >/dev/null 2>&1; then
-            PY=python3
-          elif command -v python >/dev/null 2>&1; then
-            PY=python
-          else
-            echo "❌ No Python interpreter found on PATH"
-            exit 1
-          fi
-          
-          # Create CMakeLists for Obfuscation
-          cat > llvm/lib/Transforms/Obfuscation/CMakeLists.txt << 'EOF'
-          add_llvm_component_library(LLVMObfuscation
-            BogusControlFlow.cpp Flattening.cpp Substitution.cpp StringObfuscation.cpp
-            LINK_COMPONENTS Core Support TransformUtils
-          )
-          EOF
-          
-          # Add Obfuscation subdirectory to parent CMakeLists
-          grep -q "add_subdirectory(Obfuscation)" llvm/lib/Transforms/CMakeLists.txt || \
-            echo "add_subdirectory(Obfuscation)" >> llvm/lib/Transforms/CMakeLists.txt
-          grep -q "add_subdirectory(Obfuscation)" llvm/lib/Transforms/CMakeLists.txt || \
-            { echo "❌ Failed to register Obfuscation subdirectory"; exit 1; }
-          
-          # Add LLVMObfuscation to Passes CMakeLists (search for TransformUtils, not LLVMTransformUtils)
-          PASSES_CMAKE="llvm/lib/Passes/CMakeLists.txt"
-          if ! grep -q "LLVMObfuscation" "$PASSES_CMAKE"; then
-            "$PY" -c "
-          from pathlib import Path
-          path = Path('$PASSES_CMAKE')
-          lines = path.read_text().splitlines(True)
-          new_lines = []
-          inserted = False
-          for line in lines:
-              new_lines.append(line)
-              if 'TransformUtils' in line and not inserted:
-                  new_lines.append('  LLVMObfuscation\n')
-                  inserted = True
-          path.write_text(''.join(new_lines))
-          "
-            grep -q "LLVMObfuscation" "$PASSES_CMAKE" || { echo "❌ Failed to add LLVMObfuscation to Passes CMakeLists"; exit 1; }
-          fi
-          
-          # Patch PassBuilder.cpp
-          PASSBUILDER="llvm/lib/Passes/PassBuilder.cpp"
-          
-          # Add includes
-          if ! grep -q "BogusControlFlow.h" "$PASSBUILDER"; then
-            "$PY" -c 'from pathlib import Path; path=Path("llvm/lib/Passes/PassBuilder.cpp"); text=path.read_text(); anchor="#include \"llvm/Transforms/Scalar/LICM.h\"\n"; insert="#include \"llvm/Transforms/Obfuscation/BogusControlFlow.h\"\n#include \"llvm/Transforms/Obfuscation/Flattening.h\"\n#include \"llvm/Transforms/Obfuscation/Substitution.h\"\n#include \"llvm/Transforms/Obfuscation/StringObfuscation.h\"\n"; path.write_text(text.replace(anchor, anchor + insert, 1)) if anchor in text and "BogusControlFlow.h" not in text else None'
-            grep -q "BogusControlFlow.h" "$PASSBUILDER" || { echo "❌ Failed to add Obfuscation includes"; exit 1; }
-          fi
-          
-          # Add function pass registrations (bcf, fla, sub)
-          if ! grep -q 'FUNCTION_PASS("bcf", BogusControlFlow())' "$PASSBUILDER"; then
-            "$PY" -c 'from pathlib import Path; path=Path("llvm/lib/Passes/PassBuilder.cpp"); text=path.read_text(); anchor="  FUNCTION_PASS(\"loop-unroll\", LoopUnrollPass())\n"; insert="  FUNCTION_PASS(\"bcf\", BogusControlFlow())\n  FUNCTION_PASS(\"fla\", Flattening())\n  FUNCTION_PASS(\"sub\", Substitution())\n"; path.write_text(text.replace(anchor, anchor + insert, 1)) if anchor in text and "FUNCTION_PASS(\"bcf\", BogusControlFlow())" not in text else None'
-            grep -q '"bcf"' "$PASSBUILDER" || { echo "❌ Failed to register bcf/fla/sub function passes"; exit 1; }
-          fi
-          
-          # Add module pass registration (sobf)
-          if ! grep -q 'MODULE_PASS("sobf", StringObfuscation())' "$PASSBUILDER"; then
-            "$PY" -c 'from pathlib import Path; path=Path("llvm/lib/Passes/PassBuilder.cpp"); text=path.read_text(); anchor="  MODULE_PASS(\"verify\", VerifierPass())\n"; insert="  MODULE_PASS(\"sobf\", StringObfuscation())\n"; path.write_text(text.replace(anchor, anchor + insert, 1)) if anchor in text and "MODULE_PASS(\"sobf\", StringObfuscation())" not in text else None'
-            grep -q '"sobf"' "$PASSBUILDER" || { echo "❌ Failed to register sobf module pass"; exit 1; }
-          fi
-          
-          echo "✅ All passes registered"
-          echo ""
-          echo "Verification:"
-          grep -c "BogusControlFlow\|Flattening\|Substitution\|StringObfuscation" "$PASSBUILDER"
-          grep '"bcf"\|"fla"\|"sub"\|"sobf"' "$PASSBUILDER"
-
-      # ============================================
-      # STEP 6: Setup MSVC + Build Tools
-      # ============================================
-      - name: Setup MSVC
+      # ---------------------------------------------------------------
+      # 1. Set up MSVC developer environment (cl.exe + env)
+      # ---------------------------------------------------------------
+      - name: Set up MSVC dev cmd
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: amd64
+          arch: x64
 
-      - name: Install build tools
-        shell: powershell
+      # ---------------------------------------------------------------
+      # 2. Make sure Ninja is available (GHA windows images ship it,
+      #    this is just a safety net)
+      # ---------------------------------------------------------------
+      - name: Ensure Ninja
+        shell: bash
         run: |
-          choco install ninja cmake -y --no-progress 2>&1 | Out-Null
-          Write-Host "✅ Tools ready"
+          set -euo pipefail
+          if ! command -v ninja >/dev/null 2>&1; then
+            choco install ninja -y --no-progress
+          fi
+          ninja --version || true
+          cmake --version
 
-      # ============================================
-      # 🔥 CACHE BUILD (with new key to force rebuild)
-      # ============================================
-      - name: Cache LLVM build
-        id: cache
-        uses: actions/cache@v4
-        with:
-          path: llvm-project/build
-          key: ollvm-build-${{ runner.os }}-v4-${{ hashFiles('llvm-project/llvm/lib/Passes/PassBuilder.cpp', 'llvm-project/llvm/lib/Transforms/Obfuscation/*.h') }}
-          restore-keys: ollvm-build-${{ runner.os }}-v4-
-
-      # ============================================
-      # STEP 7: Configure (skip if cached)
-      # ============================================
-      - name: Configure
-        if: steps.cache.outputs.cache-hit != 'true'
-        shell: cmd
+      # ---------------------------------------------------------------
+      # 3. Download & extract official LLVM 17.0.6 monorepo source
+      # ---------------------------------------------------------------
+      - name: Download LLVM 17.0.6 source
+        shell: bash
         run: |
-          cd llvm-project
-          mkdir build
-          cd build
-          cmake -G Ninja ^
-            -DCMAKE_BUILD_TYPE=Release ^
-            -DLLVM_ENABLE_PROJECTS="clang;lld" ^
-            -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86" ^
-            -DLLVM_ENABLE_ASSERTIONS=OFF ^
-            -DLLVM_INCLUDE_TESTS=OFF ^
-            -DLLVM_BUILD_TESTS=OFF ^
-            -DLLVM_BUILD_TOOLS=ON ^
-            -DLLVM_PARALLEL_COMPILE_JOBS=4 ^
-            -DLLVM_PARALLEL_LINK_JOBS=2 ^
-            ../llvm
-          if errorlevel 1 exit /b 1
-          echo ✅ Configured
+          set -euo pipefail
+          URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/llvm-project-17.0.6.src.tar.xz"
+          curl -L --fail -o llvm.src.tar.xz "$URL"
+          tar -xJf llvm.src.tar.xz
+          ls -d llvm-project-17.0.6.src/llvm
 
-      # ============================================
-      # STEP 8: Build (skip if cached)
-      # ============================================
-      - name: Build OLLVM
-        timeout-minutes: 180
-        shell: cmd
+      # ---------------------------------------------------------------
+      # 4. Clone DreamSoule/ollvm17 (already-patched PassBuilder.cpp,
+      #    CMakeLists.txt and the Obfuscation/ folder)
+      # ---------------------------------------------------------------
+      - name: Clone DreamSoule/ollvm17
+        shell: bash
         run: |
-          cd llvm-project\build
-          if not exist build.ninja (
-            echo ⚠️ No build.ninja, reconfiguring...
-            cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;lld" -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86" -DLLVM_ENABLE_ASSERTIONS=OFF -DLLVM_INCLUDE_TESTS=OFF -DLLVM_BUILD_TESTS=OFF -DLLVM_BUILD_TOOLS=ON ../llvm
-          )
-          ninja -j 4 clang lld
-          if errorlevel 1 exit /b 1
-          if exist bin\clang.exe (
-            set CLANG_BIN=bin\clang.exe
-          ) else if exist bin\Release\clang.exe (
-            set CLANG_BIN=bin\Release\clang.exe
-          ) else (
-            echo clang.exe not found after build
-            exit /b 1
-          )
-          "%CLANG_BIN%" --version
-          echo ✅ Build complete!
+          set -euo pipefail
+          git clone --depth 1 https://github.com/DreamSoule/ollvm17 ollvm17
+          ls ollvm17/llvm-project/llvm/lib/Passes/Obfuscation | head
 
-      # ============================================
-      # STEP 9: Integrate OLLVM into NDK
-      # ============================================
-      - name: Integrate into NDK
-        shell: cmd
+      # ---------------------------------------------------------------
+      # 5. Overlay the obfuscation files onto the official source tree.
+      #    NOTE: do NOT manually edit PassBuilder.cpp or CMakeLists.txt;
+      #    the fork ships them already patched. Just copy them in.
+      # ---------------------------------------------------------------
+      - name: Overlay obfuscation files
+        shell: bash
         run: |
-          set NDK_BIN=ndk\android-ndk-r26d\toolchains\llvm\prebuilt\windows-x86_64\bin
-          if exist llvm-project\build\bin\clang.exe (
-            set SRC=llvm-project\build\bin
-          ) else if exist llvm-project\build\bin\Release\clang.exe (
-            set SRC=llvm-project\build\bin\Release
-          ) else (
-            echo clang.exe not found in LLVM build output
-            exit /b 1
-          )
-          if not exist "%NDK_BIN%" (
-            echo NDK toolchain directory not found
-            exit /b 1
-          )
-          copy /Y "%NDK_BIN%\clang.exe" "%NDK_BIN%\clang.original.exe"
-          copy /Y "%NDK_BIN%\clang++.exe" "%NDK_BIN%\clang++.original.exe"
-          copy /Y "%SRC%\clang.exe" "%NDK_BIN%\clang.exe"
-          copy /Y "%SRC%\clang++.exe" "%NDK_BIN%\clang++.exe"
-          cd "%NDK_BIN%"
-          copy /Y clang.exe clang-17.exe
-          copy /Y clang++.exe clang++-17.exe
-          echo ✅ Integrated!
+          set -euo pipefail
+          SRC="ollvm17/llvm-project/llvm/lib/Passes"
+          DST="llvm-project-17.0.6.src/llvm/lib/Passes"
+          cp -rf "$SRC"/. "$DST"/
+          echo "---- Obfuscation folder now in place ----"
+          ls "$DST/Obfuscation"
+          echo "---- Sanity: PassBuilder.cpp contains the callback ----"
+          grep -c "registerPipelineStartEPCallback" "$DST/PassBuilder.cpp" || true
+          grep -c "Obfuscation/BogusControlFlow.h"     "$DST/PassBuilder.cpp" || true
+          echo "---- Sanity: CMakeLists lists Obfuscation sources ----"
+          grep -c "Obfuscation/StringEncryption.cpp"   "$DST/CMakeLists.txt" || true
 
-      # ============================================
-      # STEP 10: Test flags & Package
-      # ============================================
-      - name: Test flags
-        shell: cmd
+      # ---------------------------------------------------------------
+      # 6. Apply the getBasicBlockList() private fix for 17.0.6
+      #    The obfuscation code calls Function::getBasicBlockList(),
+      #    which is private in LLVM 17. Comment the nearest preceding
+      #    `private:` so the member falls back to public visibility.
+      #    (Per DreamSoule's own patch notes.)
+      # ---------------------------------------------------------------
+      - name: Patch getBasicBlockList visibility
+        shell: bash
         run: |
-          set CLANG=ndk\android-ndk-r26d\toolchains\llvm\prebuilt\windows-x86_64\bin\clang.exe
-          echo int main(){return 0;} > t.c
-          "%CLANG%" -target aarch64-linux-android21 -mllvm -bcf -mllvm -fla -mllvm -sub -mllvm -sobf -O2 -c t.c -o nul 2>&1 && echo ✅ ALL FLAGS WORK || echo ❌ FAILED
+          set -euo pipefail
+          if command -v python3 >/dev/null 2>&1; then PY=python3
+          elif command -v python >/dev/null 2>&1; then PY=python
+          else echo "No python"; exit 1; fi
 
-      - name: Package
-        shell: powershell
+          FH="llvm-project-17.0.6.src/llvm/include/llvm/IR/Function.h"
+          cat > /tmp/patch_fnh.py <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          text = p.read_text(encoding="utf-8", errors="replace")
+          lines = text.splitlines(True)
+          # find a line that declares getBasicBlockList
+          idx = None
+          for i, ln in enumerate(lines):
+              if "getBasicBlockList" in ln:
+                  idx = i; break
+          if idx is None:
+              print("getBasicBlockList not found; nothing to patch")
+              sys.exit(0)
+          # walk upward to nearest standalone 'private:' specifier
+          target = None
+          for j in range(idx-1, -1, -1):
+              s = lines[j].strip()
+              if s == "private:":
+                  target = j; break
+              if s == "public:" or s == "protected:":
+                  break  # already public/protected above it
+          if target is None:
+              print("No preceding private: to comment (already public)")
+              sys.exit(0)
+          lines[target] = lines[target].replace("private:", "// private: (commented for OLLVM17)")
+          p.write_text("".join(lines), encoding="utf-8")
+          print(f"Commented private: at line {target+1} (above getBasicBlockList at line {idx+1})")
+          PY
+          "$PY" /tmp/patch_fnh.py "$FH"
+          grep -n "getBasicBlockList\|private: (commented" "$FH" | head
+
+      # ---------------------------------------------------------------
+      # 7. Configure CMake (Ninja + MSVC). Source dir = the llvm/ subdir
+      #    of the monorepo; clang and lld are pulled in as sibling
+      #    projects via LLVM_ENABLE_PROJECTS.
+      # ---------------------------------------------------------------
+      - name: Configure CMake
+        shell: bash
         run: |
-          cd ndk
-          Compress-Archive -Path android-ndk-r26d -DestinationPath ../OLLVM-NDK-r26d-Windows.zip -Force
-          Write-Host "✅ Done! Size: $([math]::Round((Get-Item ../OLLVM-NDK-r26d-Windows.zip).Length/1GB, 2)) GB"
+          set -euo pipefail
+          DIST="$GITHUB_WORKSPACE/ollvm-dist"
+          cmake -S llvm-project-17.0.6.src/llvm -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$DIST" \
+            -DCMAKE_C_FLAGS="/utf-8" \
+            -DCMAKE_CXX_FLAGS="/utf-8" \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86" \
+            -DLLVM_ENABLE_ASSERTIONS=OFF \
+            -DLLVM_ENABLE_EH=OFF \
+            -DLLVM_ENABLE_RTTI=OFF \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF \
+            -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON \
+            -DLLVM_OPTIMIZED_TABLEGEN=ON \
+            -DLLVM_ENABLE_PLUGINS=OFF
 
-      - name: Upload artifact
+      # ---------------------------------------------------------------
+      # 8. Build & install (only the toolchain: clang, lld, headers)
+      # ---------------------------------------------------------------
+      - name: Build & install toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          N="${NUMBER_OF_PROCESSORS:-2}"
+          echo "Building with $N parallel jobs..."
+          cmake --build build --target install --parallel "$N" -- --verbose || \
+            cmake --build build --target install --parallel "$N"
+          echo "---- Installed toolchain ----"
+          ls -R "$GITHUB_WORKSPACE/ollvm-dist/bin" | head -50
+
+      # ---------------------------------------------------------------
+      # 9. Package the installed toolchain into a zip
+      # ---------------------------------------------------------------
+      - name: Package toolchain
+        shell: pwsh
+        run: |
+          $dst = "$env:GITHUB_WORKSPACE\ollvm-dist"
+          $zip = "$env:GITHUB_WORKSPACE\ollvm17-17.0.6-windows-x86_64.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          7z a -tzip -mx=5 "$zip" "$dst\*"
+          Write-Host "Zip created: $zip"
+          Get-Item "$zip" | Select-Object FullName,Length
+
+      # ---------------------------------------------------------------
+      # 10. Upload the artifact
+      # ---------------------------------------------------------------
+      - name: Upload toolchain artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OLLVM-NDK-r26d-Windows
-          path: OLLVM-NDK-r26d-Windows.zip
-          retention-days: 90
+          name: ollvm17-17.0.6-windows-x86_64
+          path: ollvm17-17.0.6-windows-x86_64.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  # -----------------------------------------------------------------
+  # How to use the artifact with Android Studio + NDK r26:
+  #   1. Download the zip from the workflow run, extract it.
+  #   2. In your NDK r26 install, back up and replace the binaries in:
+  #        <NDK>/toolchains/llvm/prebuilt/windows-x86_64/bin/
+  #      with clang.exe, clang++.exe, ld.lld, lld-link, etc. from the zip.
+  #      (NDK r26 ships clang 17.0.2; this 17.0.6 build is ABI-compatible
+  #       for cross-compiling to Android.)
+  #   3. Add obfuscation flags in your build.gradle(cmake/ndk) via
+  #      C/C++ -> Command Line, e.g.:
+  #        -mllvm -fla -mllvm -bcf -mllvm -bcf_prob=80 -mllvm -bcf_loop=3
+  #        -mllvm -sobf -mllvm -icall -mllvm -ibr -mllvm -igv
+  #        -mllvm -sub -mllvm -sub_loop=3 -mllvm -split -mllvm -split_num=5
+  #   4. For per-function control use annotation:
+  #        __attribute__((annotate("fla bcf sub split ibr icall igv"))) void f(){...}
+  #        __attribute__((annotate("nofla nobcf"))) void g(){...}
+  # -----------------------------------------------------------------
