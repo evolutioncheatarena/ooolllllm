@@ -170,6 +170,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export MSYS2_ARG_CONV_EXCL="*"
           DIST="$GITHUB_WORKSPACE/ollvm-dist"
           cmake -S llvm-project-17.0.6.src/llvm -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
