@@ -178,7 +178,7 @@ jobs:
           echo "✅ All files verified"
 
       # ============================================
-      # STEP 5: Register passes in LLVM (robust Python insert)
+      # STEP 5: Register passes in LLVM (FIXED for TransformUtils)
       # ============================================
       - name: Register OLLVM passes
         shell: bash
@@ -209,7 +209,7 @@ jobs:
           grep -q "add_subdirectory(Obfuscation)" llvm/lib/Transforms/CMakeLists.txt || \
             { echo "❌ Failed to register Obfuscation subdirectory"; exit 1; }
           
-          # Add LLVMObfuscation to Passes CMakeLists (robust Python version)
+          # Add LLVMObfuscation to Passes CMakeLists (search for TransformUtils, not LLVMTransformUtils)
           PASSES_CMAKE="llvm/lib/Passes/CMakeLists.txt"
           if ! grep -q "LLVMObfuscation" "$PASSES_CMAKE"; then
             "$PY" -c "
@@ -220,7 +220,7 @@ jobs:
           inserted = False
           for line in lines:
               new_lines.append(line)
-              if 'LLVMTransformUtils' in line and not inserted:
+              if 'TransformUtils' in line and not inserted:
                   new_lines.append('  LLVMObfuscation\n')
                   inserted = True
           path.write_text(''.join(new_lines))
@@ -277,8 +277,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: llvm-project/build
-          key: ollvm-build-${{ runner.os }}-v3-${{ hashFiles('llvm-project/llvm/lib/Passes/PassBuilder.cpp', 'llvm-project/llvm/lib/Transforms/Obfuscation/*.h') }}
-          restore-keys: ollvm-build-${{ runner.os }}-v3-
+          key: ollvm-build-${{ runner.os }}-v4-${{ hashFiles('llvm-project/llvm/lib/Passes/PassBuilder.cpp', 'llvm-project/llvm/lib/Transforms/Obfuscation/*.h') }}
+          restore-keys: ollvm-build-${{ runner.os }}-v4-
 
       # ============================================
       # STEP 7: Configure (skip if cached)
