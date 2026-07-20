@@ -162,6 +162,54 @@ jobs:
           grep -n "getBasicBlockList\|private: (commented" "$FH" | head
 
       # ---------------------------------------------------------------
+      # 6b. Patch Utils.cpp: add missing `valueEscapes` helper
+      #     This function was removed from LLVM 17 but the obfuscation
+      #     code's fixStack() still calls it. Replicate the old logic:
+      #     an instruction "escapes" if any user lives outside its BB.
+      # ---------------------------------------------------------------
+      - name: Patch Utils.cpp (valueEscapes)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v python3 >/dev/null 2>&1; then PY=python3
+          elif command -v python >/dev/null 2>&1; then PY=python
+          else echo "No python"; exit 1; fi
+
+          UTILS="llvm-project-17.0.6.src/llvm/lib/Passes/Obfuscation/Utils.cpp"
+
+          cat > /tmp/patch_ve.py <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          text = p.read_text(encoding="utf-8", errors="replace")
+          if text.find("static bool valueEscapes") >= 0:
+              print("valueEscapes already patched – skipping")
+              sys.exit(0)
+          # Insert the helper right before "void llvm::fixStack(Function"
+          marker = "void llvm::fixStack(Function"
+          if marker not in text:
+              print("ERROR: fixStack signature not found in Utils.cpp")
+              sys.exit(1)
+          helper = '''static bool valueEscapes(llvm::Instruction &I) {
+            llvm::BasicBlock *BB = I.getParent();
+            for (llvm::User *U : I.users()) {
+              llvm::Instruction *UI = llvm::dyn_cast<llvm::Instruction>(U);
+              if (!UI || UI->getParent() != BB)
+                return true;
+            }
+            return false;
+          }
+
+          '''
+          text = text.replace(marker, helper + marker)
+          p.write_text(text, encoding="utf-8")
+          print("Inserted valueEscapes helper")
+          PY
+          "$PY" /tmp/patch_ve.py "$UTILS"
+          grep -c "valueEscapes" "$UTILS" || true
+          grep "static bool valueEscapes" "$UTILS"
+
+      # ---------------------------------------------------------------
       # 7. Configure CMake (Ninja + MSVC). Source dir = the llvm/ subdir
       #    of the monorepo; clang and lld are pulled in as sibling
       #    projects via LLVM_ENABLE_PROJECTS.
