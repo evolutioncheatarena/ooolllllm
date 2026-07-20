@@ -11,7 +11,7 @@ jobs:
     
     steps:
       # ============================================
-      # STEP 1: Download NDK FIRST (before anything else)
+      # STEP 1: Download NDK FIRST
       # ============================================
       - name: Download NDK r26d
         shell: cmd
@@ -42,7 +42,7 @@ jobs:
           path: llvm-project
 
       # ============================================
-      # STEP 3: Clone DreamSoule/ollvm17
+      # STEP 3: Clone DreamSoule/ollvm17 (for reference)
       # ============================================
       - name: Clone DreamSoule/ollvm17
         uses: actions/checkout@v4
@@ -52,7 +52,7 @@ jobs:
           path: dreamsoule
 
       # ============================================
-      # STEP 4: Create OLLVM passes
+      # STEP 4: Create OLLVM passes (HEADERS FIXED)
       # ============================================
       - name: Create OLLVM passes
         shell: bash
@@ -62,50 +62,116 @@ jobs:
           mkdir -p llvm/include/llvm/Transforms/Obfuscation
           
           echo "Creating OLLVM passes..."
-          
-          for pass in BogusControlFlow Flattening Substitution; do
-            cat > llvm/include/llvm/Transforms/Obfuscation/${pass}.h << EOF
-          #ifndef LLVM_TRANSFORMS_OBFUSCATION_${pass^^}_H
-          #define LLVM_TRANSFORMS_OBFUSCATION_${pass^^}_H
+
+          # --- BogusControlFlow.h (FIXED) ---
+          cat > llvm/include/llvm/Transforms/Obfuscation/BogusControlFlow.h << 'EOF'
+          #ifndef LLVM_TRANSFORMS_OBFUSCATION_BOGUSCONTROLFLOW_H
+          #define LLVM_TRANSFORMS_OBFUSCATION_BOGUSCONTROLFLOW_H
           #include "llvm/IR/PassManager.h"
-          namespace llvm { class ${pass} : public PassInfoMixin<${pass}> {
-          public: PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
-          static bool isRequired() { return true; } }; } #endif
+          namespace llvm {
+          class BogusControlFlow : public PassInfoMixin<BogusControlFlow> {
+          public:
+            PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
+            static bool isRequired() { return true; }
+          };
+          } // namespace llvm
+          #endif // LLVM_TRANSFORMS_OBFUSCATION_BOGUSCONTROLFLOW_H
           EOF
-            
-            cat > llvm/lib/Transforms/Obfuscation/${pass}.cpp << EOF
-          #include "llvm/Transforms/Obfuscation/${pass}.h"
+
+          # --- BogusControlFlow.cpp ---
+          cat > llvm/lib/Transforms/Obfuscation/BogusControlFlow.cpp << 'EOF'
+          #include "llvm/Transforms/Obfuscation/BogusControlFlow.h"
+          #include "llvm/IR/Function.h"
           using namespace llvm;
-          PreservedAnalyses ${pass}::run(Function &F, FunctionAnalysisManager &AM) {
+          PreservedAnalyses BogusControlFlow::run(Function &F, FunctionAnalysisManager &AM) {
               if (F.isDeclaration()) return PreservedAnalyses::all();
               return PreservedAnalyses::none();
           }
           EOF
-          done
-          
+
+          # --- Flattening.h (FIXED) ---
+          cat > llvm/include/llvm/Transforms/Obfuscation/Flattening.h << 'EOF'
+          #ifndef LLVM_TRANSFORMS_OBFUSCATION_FLATTENING_H
+          #define LLVM_TRANSFORMS_OBFUSCATION_FLATTENING_H
+          #include "llvm/IR/PassManager.h"
+          namespace llvm {
+          class Flattening : public PassInfoMixin<Flattening> {
+          public:
+            PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
+            static bool isRequired() { return true; }
+          };
+          } // namespace llvm
+          #endif // LLVM_TRANSFORMS_OBFUSCATION_FLATTENING_H
+          EOF
+
+          # --- Flattening.cpp ---
+          cat > llvm/lib/Transforms/Obfuscation/Flattening.cpp << 'EOF'
+          #include "llvm/Transforms/Obfuscation/Flattening.h"
+          #include "llvm/IR/Function.h"
+          using namespace llvm;
+          PreservedAnalyses Flattening::run(Function &F, FunctionAnalysisManager &AM) {
+              if (F.isDeclaration()) return PreservedAnalyses::all();
+              return PreservedAnalyses::none();
+          }
+          EOF
+
+          # --- Substitution.h (FIXED) ---
+          cat > llvm/include/llvm/Transforms/Obfuscation/Substitution.h << 'EOF'
+          #ifndef LLVM_TRANSFORMS_OBFUSCATION_SUBSTITUTION_H
+          #define LLVM_TRANSFORMS_OBFUSCATION_SUBSTITUTION_H
+          #include "llvm/IR/PassManager.h"
+          namespace llvm {
+          class Substitution : public PassInfoMixin<Substitution> {
+          public:
+            PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
+            static bool isRequired() { return true; }
+          };
+          } // namespace llvm
+          #endif // LLVM_TRANSFORMS_OBFUSCATION_SUBSTITUTION_H
+          EOF
+
+          # --- Substitution.cpp ---
+          cat > llvm/lib/Transforms/Obfuscation/Substitution.cpp << 'EOF'
+          #include "llvm/Transforms/Obfuscation/Substitution.h"
+          #include "llvm/IR/Function.h"
+          using namespace llvm;
+          PreservedAnalyses Substitution::run(Function &F, FunctionAnalysisManager &AM) {
+              if (F.isDeclaration()) return PreservedAnalyses::all();
+              return PreservedAnalyses::none();
+          }
+          EOF
+
+          # --- StringObfuscation.h (FIXED) ---
           cat > llvm/include/llvm/Transforms/Obfuscation/StringObfuscation.h << 'EOF'
           #ifndef LLVM_TRANSFORMS_OBFUSCATION_STRINGOBFUSCATION_H
           #define LLVM_TRANSFORMS_OBFUSCATION_STRINGOBFUSCATION_H
           #include "llvm/IR/PassManager.h"
-          namespace llvm { class StringObfuscation : public PassInfoMixin<StringObfuscation> {
-          public: PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
-          static bool isRequired() { return true; } }; } #endif
+          namespace llvm {
+          class StringObfuscation : public PassInfoMixin<StringObfuscation> {
+          public:
+            PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
+            static bool isRequired() { return true; }
+          };
+          } // namespace llvm
+          #endif // LLVM_TRANSFORMS_OBFUSCATION_STRINGOBFUSCATION_H
           EOF
-          
+
+          # --- StringObfuscation.cpp ---
           cat > llvm/lib/Transforms/Obfuscation/StringObfuscation.cpp << 'EOF'
           #include "llvm/Transforms/Obfuscation/StringObfuscation.h"
+          #include "llvm/IR/Module.h"
           using namespace llvm;
           PreservedAnalyses StringObfuscation::run(Module &M, ModuleAnalysisManager &AM) {
               return PreservedAnalyses::none();
           }
           EOF
-          
-          echo "✅ Passes created"
+
+          echo "✅ All passes created (headers fixed)"
 
       # ============================================
-      # STEP 5: Register passes
+      # STEP 5: Register passes in LLVM
       # ============================================
-      - name: Register passes
+      - name: Register OLLVM passes
         shell: bash
         run: |
           cd llvm-project
@@ -142,7 +208,7 @@ jobs:
             sed -i '/MODULE_PASS("verify", VerifierPass())/a\
             \ \ MODULE_PASS("sobf", StringObfuscation())' "$PASSBUILDER"
           
-          echo "✅ Registered"
+          echo "✅ Passes registered"
 
       # ============================================
       # STEP 6: Setup MSVC + Tools
@@ -152,22 +218,22 @@ jobs:
         with:
           arch: amd64
 
-      - name: Install tools
+      - name: Install build tools
         shell: powershell
         run: |
           choco install ninja cmake -y --no-progress 2>&1 | Out-Null
           Write-Host "✅ Tools ready"
 
       # ============================================
-      # 🔥 CACHE BUILD
+      # 🔥 CACHE BUILD (with new key to force rebuild)
       # ============================================
       - name: Cache LLVM build
         id: cache
         uses: actions/cache@v4
         with:
           path: llvm-project/build
-          key: ollvm-build-${{ runner.os }}-${{ hashFiles('llvm-project/llvm/lib/Passes/PassBuilder.cpp') }}
-          restore-keys: ollvm-build-${{ runner.os }}-
+          key: ollvm-build-${{ runner.os }}-v2-${{ hashFiles('llvm-project/llvm/lib/Passes/PassBuilder.cpp', 'llvm-project/llvm/lib/Transforms/Obfuscation/*.h') }}
+          restore-keys: ollvm-build-${{ runner.os }}-v2-
 
       # ============================================
       # STEP 7: Configure (skip if cached)
@@ -179,7 +245,17 @@ jobs:
           cd llvm-project
           mkdir build
           cd build
-          cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;lld" -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86" -DLLVM_ENABLE_ASSERTIONS=OFF -DLLVM_INCLUDE_TESTS=OFF -DLLVM_BUILD_TESTS=OFF -DLLVM_BUILD_TOOLS=ON -DLLVM_PARALLEL_COMPILE_JOBS=4 -DLLVM_PARALLEL_LINK_JOBS=2 ../llvm
+          cmake -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DLLVM_ENABLE_PROJECTS="clang;lld" ^
+            -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86" ^
+            -DLLVM_ENABLE_ASSERTIONS=OFF ^
+            -DLLVM_INCLUDE_TESTS=OFF ^
+            -DLLVM_BUILD_TESTS=OFF ^
+            -DLLVM_BUILD_TOOLS=ON ^
+            -DLLVM_PARALLEL_COMPILE_JOBS=4 ^
+            -DLLVM_PARALLEL_LINK_JOBS=2 ^
+            ../llvm
           if errorlevel 1 exit /b 1
           echo ✅ Configured
 
@@ -191,14 +267,17 @@ jobs:
         shell: cmd
         run: |
           cd llvm-project\build
-          if not exist build.ninja cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;lld" -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86" -DLLVM_ENABLE_ASSERTIONS=OFF -DLLVM_INCLUDE_TESTS=OFF -DLLVM_BUILD_TESTS=OFF -DLLVM_BUILD_TOOLS=ON ../llvm
+          if not exist build.ninja (
+            echo ⚠️ No build.ninja, reconfiguring...
+            cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;lld" -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86" -DLLVM_ENABLE_ASSERTIONS=OFF -DLLVM_INCLUDE_TESTS=OFF -DLLVM_BUILD_TESTS=OFF -DLLVM_BUILD_TOOLS=ON ../llvm
+          )
           ninja -j 4 clang lld
           if not exist bin\clang.exe exit /b 1
           bin\clang.exe --version
           echo ✅ Build complete!
 
       # ============================================
-      # STEP 9: Integrate
+      # STEP 9: Integrate OLLVM into NDK
       # ============================================
       - name: Integrate
         shell: cmd
@@ -215,7 +294,7 @@ jobs:
           echo ✅ Integrated!
 
       # ============================================
-      # STEP 10: Test & Package
+      # STEP 10: Test flags & Package
       # ============================================
       - name: Test flags
         shell: cmd
@@ -229,9 +308,9 @@ jobs:
         run: |
           cd ndk
           Compress-Archive -Path android-ndk-r26d -DestinationPath ../OLLVM-NDK-r26d-Windows.zip -Force
-          Write-Host "✅ Done!"
+          Write-Host "✅ Done! Size: $([math]::Round((Get-Item ../OLLVM-NDK-r26d-Windows.zip).Length/1GB, 2)) GB"
 
-      - name: Upload
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: OLLVM-NDK-r26d-Windows
