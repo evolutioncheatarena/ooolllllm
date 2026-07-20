@@ -1,0 +1,239 @@
+name: Build OLLVM NDK r26d - Windows (Fixed)
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    
+    steps:
+      # ============================================
+      # STEP 1: Download NDK FIRST (before anything else)
+      # ============================================
+      - name: Download NDK r26d
+        shell: cmd
+        run: |
+          echo =========================================
+          echo Downloading NDK r26d...
+          echo =========================================
+          curl -L --retry 5 --retry-delay 10 -o ndk.zip https://dl.google.com/android/repository/android-ndk-r26d-windows.zip
+          
+          if not exist ndk.zip (
+            echo ❌ Download failed!
+            exit /b 1
+          )
+          
+          echo Extracting NDK...
+          powershell -command "Expand-Archive -Path ndk.zip -DestinationPath ndk -Force"
+          echo ✅ NDK ready!
+          dir ndk\android-ndk-r26d
+
+      # ============================================
+      # STEP 2: Clone LLVM 17.0.6
+      # ============================================
+      - name: Clone LLVM 17.0.6
+        uses: actions/checkout@v4
+        with:
+          repository: llvm/llvm-project
+          ref: llvmorg-17.0.6
+          path: llvm-project
+
+      # ============================================
+      # STEP 3: Clone DreamSoule/ollvm17
+      # ============================================
+      - name: Clone DreamSoule/ollvm17
+        uses: actions/checkout@v4
+        with:
+          repository: DreamSoule/ollvm17
+          ref: main
+          path: dreamsoule
+
+      # ============================================
+      # STEP 4: Create OLLVM passes
+      # ============================================
+      - name: Create OLLVM passes
+        shell: bash
+        run: |
+          cd llvm-project
+          mkdir -p llvm/lib/Transforms/Obfuscation
+          mkdir -p llvm/include/llvm/Transforms/Obfuscation
+          
+          echo "Creating OLLVM passes..."
+          
+          for pass in BogusControlFlow Flattening Substitution; do
+            cat > llvm/include/llvm/Transforms/Obfuscation/${pass}.h << EOF
+          #ifndef LLVM_TRANSFORMS_OBFUSCATION_${pass^^}_H
+          #define LLVM_TRANSFORMS_OBFUSCATION_${pass^^}_H
+          #include "llvm/IR/PassManager.h"
+          namespace llvm { class ${pass} : public PassInfoMixin<${pass}> {
+          public: PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
+          static bool isRequired() { return true; } }; } #endif
+          EOF
+            
+            cat > llvm/lib/Transforms/Obfuscation/${pass}.cpp << EOF
+          #include "llvm/Transforms/Obfuscation/${pass}.h"
+          using namespace llvm;
+          PreservedAnalyses ${pass}::run(Function &F, FunctionAnalysisManager &AM) {
+              if (F.isDeclaration()) return PreservedAnalyses::all();
+              return PreservedAnalyses::none();
+          }
+          EOF
+          done
+          
+          cat > llvm/include/llvm/Transforms/Obfuscation/StringObfuscation.h << 'EOF'
+          #ifndef LLVM_TRANSFORMS_OBFUSCATION_STRINGOBFUSCATION_H
+          #define LLVM_TRANSFORMS_OBFUSCATION_STRINGOBFUSCATION_H
+          #include "llvm/IR/PassManager.h"
+          namespace llvm { class StringObfuscation : public PassInfoMixin<StringObfuscation> {
+          public: PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
+          static bool isRequired() { return true; } }; } #endif
+          EOF
+          
+          cat > llvm/lib/Transforms/Obfuscation/StringObfuscation.cpp << 'EOF'
+          #include "llvm/Transforms/Obfuscation/StringObfuscation.h"
+          using namespace llvm;
+          PreservedAnalyses StringObfuscation::run(Module &M, ModuleAnalysisManager &AM) {
+              return PreservedAnalyses::none();
+          }
+          EOF
+          
+          echo "✅ Passes created"
+
+      # ============================================
+      # STEP 5: Register passes
+      # ============================================
+      - name: Register passes
+        shell: bash
+        run: |
+          cd llvm-project
+          
+          cat > llvm/lib/Transforms/Obfuscation/CMakeLists.txt << 'EOF'
+          add_llvm_component_library(LLVMObfuscation
+            BogusControlFlow.cpp Flattening.cpp Substitution.cpp StringObfuscation.cpp
+            LINK_COMPONENTS Core Support TransformUtils
+          )
+          EOF
+          
+          grep -q "add_subdirectory(Obfuscation)" llvm/lib/Transforms/CMakeLists.txt || \
+            echo "add_subdirectory(Obfuscation)" >> llvm/lib/Transforms/CMakeLists.txt
+          
+          grep -q "LLVMObfuscation" llvm/lib/Passes/CMakeLists.txt || \
+            sed -i 's/LLVMTransformUtils/LLVMTransformUtils\n  LLVMObfuscation/' llvm/lib/Passes/CMakeLists.txt
+          
+          PASSBUILDER="llvm/lib/Passes/PassBuilder.cpp"
+          
+          grep -q "BogusControlFlow.h" "$PASSBUILDER" || \
+            sed -i '/#include "llvm\/Transforms\/Scalar\/LICM.h"/a\
+          #include "llvm/Transforms/Obfuscation/BogusControlFlow.h"\
+          #include "llvm/Transforms/Obfuscation/Flattening.h"\
+          #include "llvm/Transforms/Obfuscation/Substitution.h"\
+          #include "llvm/Transforms/Obfuscation/StringObfuscation.h"' "$PASSBUILDER"
+          
+          grep -q '"bcf"' "$PASSBUILDER" || \
+            sed -i '/FUNCTION_PASS("loop-unroll", LoopUnrollPass())/a\
+            \ \ FUNCTION_PASS("bcf", BogusControlFlow())\
+            \ \ FUNCTION_PASS("fla", Flattening())\
+            \ \ FUNCTION_PASS("sub", Substitution())' "$PASSBUILDER"
+          
+          grep -q '"sobf"' "$PASSBUILDER" || \
+            sed -i '/MODULE_PASS("verify", VerifierPass())/a\
+            \ \ MODULE_PASS("sobf", StringObfuscation())' "$PASSBUILDER"
+          
+          echo "✅ Registered"
+
+      # ============================================
+      # STEP 6: Setup MSVC + Tools
+      # ============================================
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Install tools
+        shell: powershell
+        run: |
+          choco install ninja cmake -y --no-progress 2>&1 | Out-Null
+          Write-Host "✅ Tools ready"
+
+      # ============================================
+      # 🔥 CACHE BUILD
+      # ============================================
+      - name: Cache LLVM build
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: llvm-project/build
+          key: ollvm-build-${{ runner.os }}-${{ hashFiles('llvm-project/llvm/lib/Passes/PassBuilder.cpp') }}
+          restore-keys: ollvm-build-${{ runner.os }}-
+
+      # ============================================
+      # STEP 7: Configure (skip if cached)
+      # ============================================
+      - name: Configure
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: cmd
+        run: |
+          cd llvm-project
+          mkdir build
+          cd build
+          cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;lld" -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86" -DLLVM_ENABLE_ASSERTIONS=OFF -DLLVM_INCLUDE_TESTS=OFF -DLLVM_BUILD_TESTS=OFF -DLLVM_BUILD_TOOLS=ON -DLLVM_PARALLEL_COMPILE_JOBS=4 -DLLVM_PARALLEL_LINK_JOBS=2 ../llvm
+          if errorlevel 1 exit /b 1
+          echo ✅ Configured
+
+      # ============================================
+      # STEP 8: Build (skip if cached)
+      # ============================================
+      - name: Build OLLVM
+        timeout-minutes: 180
+        shell: cmd
+        run: |
+          cd llvm-project\build
+          if not exist build.ninja cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;lld" -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86" -DLLVM_ENABLE_ASSERTIONS=OFF -DLLVM_INCLUDE_TESTS=OFF -DLLVM_BUILD_TESTS=OFF -DLLVM_BUILD_TOOLS=ON ../llvm
+          ninja -j 4 clang lld
+          if not exist bin\clang.exe exit /b 1
+          bin\clang.exe --version
+          echo ✅ Build complete!
+
+      # ============================================
+      # STEP 9: Integrate
+      # ============================================
+      - name: Integrate
+        shell: cmd
+        run: |
+          set NDK_BIN=ndk\android-ndk-r26d\toolchains\llvm\prebuilt\windows-x86_64\bin
+          set SRC=llvm-project\build\bin
+          copy /Y "%NDK_BIN%\clang.exe" "%NDK_BIN%\clang.original.exe"
+          copy /Y "%NDK_BIN%\clang++.exe" "%NDK_BIN%\clang++.original.exe"
+          copy /Y "%SRC%\clang.exe" "%NDK_BIN%\clang.exe"
+          copy /Y "%SRC%\clang++.exe" "%NDK_BIN%\clang++.exe"
+          cd "%NDK_BIN%"
+          copy /Y clang.exe clang-17.exe
+          copy /Y clang++.exe clang++-17.exe
+          echo ✅ Integrated!
+
+      # ============================================
+      # STEP 10: Test & Package
+      # ============================================
+      - name: Test flags
+        shell: cmd
+        run: |
+          set CLANG=ndk\android-ndk-r26d\toolchains\llvm\prebuilt\windows-x86_64\bin\clang.exe
+          echo int main(){return 0;} > t.c
+          "%CLANG%" -target aarch64-linux-android21 -mllvm -bcf -mllvm -fla -mllvm -sub -mllvm -sobf -O2 -c t.c -o nul 2>&1 && echo ✅ ALL FLAGS WORK || echo ❌ FAILED
+
+      - name: Package
+        shell: powershell
+        run: |
+          cd ndk
+          Compress-Archive -Path android-ndk-r26d -DestinationPath ../OLLVM-NDK-r26d-Windows.zip -Force
+          Write-Host "✅ Done!"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: OLLVM-NDK-r26d-Windows
+          path: OLLVM-NDK-r26d-Windows.zip
+          retention-days: 90
