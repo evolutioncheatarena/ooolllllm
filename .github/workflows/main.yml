@@ -178,7 +178,7 @@ jobs:
           echo "✅ All files verified"
 
       # ============================================
-      # STEP 5: Register passes in LLVM
+      # STEP 5: Register passes in LLVM (robust Python insert)
       # ============================================
       - name: Register OLLVM passes
         shell: bash
@@ -209,10 +209,22 @@ jobs:
           grep -q "add_subdirectory(Obfuscation)" llvm/lib/Transforms/CMakeLists.txt || \
             { echo "❌ Failed to register Obfuscation subdirectory"; exit 1; }
           
-          # Add LLVMObfuscation to Passes CMakeLists (use sed, more robust)
+          # Add LLVMObfuscation to Passes CMakeLists (robust Python version)
           PASSES_CMAKE="llvm/lib/Passes/CMakeLists.txt"
           if ! grep -q "LLVMObfuscation" "$PASSES_CMAKE"; then
-            sed -i '/LLVMTransformUtils/ a\  LLVMObfuscation' "$PASSES_CMAKE"
+            "$PY" -c "
+          from pathlib import Path
+          path = Path('$PASSES_CMAKE')
+          lines = path.read_text().splitlines(True)
+          new_lines = []
+          inserted = False
+          for line in lines:
+              new_lines.append(line)
+              if 'LLVMTransformUtils' in line and not inserted:
+                  new_lines.append('  LLVMObfuscation\n')
+                  inserted = True
+          path.write_text(''.join(new_lines))
+          "
             grep -q "LLVMObfuscation" "$PASSES_CMAKE" || { echo "❌ Failed to add LLVMObfuscation to Passes CMakeLists"; exit 1; }
           fi
           
