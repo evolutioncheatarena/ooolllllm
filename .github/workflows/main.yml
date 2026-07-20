@@ -62,7 +62,24 @@ jobs:
           set -euo pipefail
           URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/llvm-project-17.0.6.src.tar.xz"
           curl -L --fail -o llvm.src.tar.xz "$URL"
-          tar -xJf llvm.src.tar.xz
+          # Some clang test fixtures contain symlinks to files that don't
+          # exist in the tarball; on Windows tar cannot create those and
+          # exits non-zero. The test fixtures are NOT needed for the build
+          # (tests are disabled below), so exclude them outright and strip
+          # the warning noise. We then verify the source dirs we actually
+          # use are present.
+          tar -xJf llvm.src.tar.xz \
+            --exclude='llvm-project-17.0.6.src/clang/test/Driver/Inputs/basic_cross_linux_tree' \
+            --exclude='llvm-project-17.0.6.src/clang/test/Driver/Inputs/multilib_32bit_linux_tree' \
+            --exclude='llvm-project-17.0.6.src/clang/test/Driver/Inputs/multilib_64bit_linux_tree' \
+            || true
+          # Verify the pieces we actually build from are intact.
+          test -d llvm-project-17.0.6.src/llvm          || { echo "MISSING llvm/"; exit 1; }
+          test -d llvm-project-17.0.6.src/clang         || { echo "MISSING clang/"; exit 1; }
+          test -d llvm-project-17.0.6.src/lld           || { echo "MISSING lld/"; exit 1; }
+          test -f llvm-project-17.0.6.src/llvm/CMakeLists.txt \
+            || { echo "MISSING llvm/CMakeLists.txt"; exit 1; }
+          echo "OK: LLVM source tree extracted (symlink test fixtures skipped)"
           ls -d llvm-project-17.0.6.src/llvm
 
       # ---------------------------------------------------------------
