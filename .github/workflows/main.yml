@@ -1,4 +1,4 @@
-name: Build OLLVM NDK r26d - Windows (Fixed)
+name: Build OLLVM NDK r26d - Windows (Final)
 
 on:
   push:
@@ -28,6 +28,7 @@ jobs:
           
           echo Extracting NDK...
           powershell -command "Expand-Archive -Path ndk.zip -DestinationPath ndk -Force"
+          if errorlevel 1 exit /b 1
           echo ✅ NDK ready!
           dir ndk\android-ndk-r26d
 
@@ -42,14 +43,12 @@ jobs:
           path: llvm-project
 
       # ============================================
-      # STEP 3: Clone DreamSoule/ollvm17 (for reference)
+      # STEP 3: Setup Python (required for Register step)
       # ============================================
-      - name: Clone DreamSoule/ollvm17
-        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          repository: DreamSoule/ollvm17
-          ref: main
-          path: dreamsoule
+          python-version: '3.x'
 
       # ============================================
       # STEP 4: Create OLLVM passes (HEADERS FIXED)
@@ -57,6 +56,7 @@ jobs:
       - name: Create OLLVM passes
         shell: bash
         run: |
+          set -euo pipefail
           cd llvm-project
           mkdir -p llvm/lib/Transforms/Obfuscation
           mkdir -p llvm/include/llvm/Transforms/Obfuscation
@@ -167,6 +167,15 @@ jobs:
           EOF
 
           echo "✅ All passes created (headers fixed)"
+          
+          # Verify all files exist
+          for f in BogusControlFlow Flattening Substitution StringObfuscation; do
+            if [ ! -f "llvm/include/llvm/Transforms/Obfuscation/${f}.h" ] || [ ! -f "llvm/lib/Transforms/Obfuscation/${f}.cpp" ]; then
+              echo "❌ Missing file: ${f}"
+              exit 1
+            fi
+          done
+          echo "✅ All files verified"
 
       # ============================================
       # STEP 5: Register passes in LLVM
@@ -174,7 +183,17 @@ jobs:
       - name: Register OLLVM passes
         shell: bash
         run: |
+          set -euo pipefail
           cd llvm-project
+          
+          if command -v python3 >/dev/null 2>&1; then
+            PY=python3
+          elif command -v python >/dev/null 2>&1; then
+            PY=python
+          else
+            echo "❌ No Python interpreter found on PATH"
+            exit 1
+          fi
           
           cat > llvm/lib/Transforms/Obfuscation/CMakeLists.txt << 'EOF'
           add_llvm_component_library(LLVMObfuscation
@@ -185,33 +204,40 @@ jobs:
           
           grep -q "add_subdirectory(Obfuscation)" llvm/lib/Transforms/CMakeLists.txt || \
             echo "add_subdirectory(Obfuscation)" >> llvm/lib/Transforms/CMakeLists.txt
+          grep -q "add_subdirectory(Obfuscation)" llvm/lib/Transforms/CMakeLists.txt || \
+            { echo "❌ Failed to register Obfuscation subdirectory"; exit 1; }
           
-          grep -q "LLVMObfuscation" llvm/lib/Passes/CMakeLists.txt || \
-            sed -i 's/LLVMTransformUtils/LLVMTransformUtils\n  LLVMObfuscation/' llvm/lib/Passes/CMakeLists.txt
+          PASSES_CMAKE="llvm/lib/Passes/CMakeLists.txt"
+          grep -q "LLVMObfuscation" "$PASSES_CMAKE" || \
+            "$PY" -c 'from pathlib import Path; path=Path("llvm/lib/Passes/CMakeLists.txt"); text=path.read_text(); needle="  LLVMTransformUtils\n"; replacement="  LLVMTransformUtils\n  LLVMObfuscation\n"; path.write_text(text.replace(needle, replacement, 1)) if needle in text and "LLVMObfuscation" not in text else None'
+          grep -q "LLVMObfuscation" "$PASSES_CMAKE" || \
+            { echo "❌ Failed to add LLVMObfuscation to Passes CMakeLists"; exit 1; }
           
           PASSBUILDER="llvm/lib/Passes/PassBuilder.cpp"
           
           grep -q "BogusControlFlow.h" "$PASSBUILDER" || \
-            sed -i '/#include "llvm\/Transforms\/Scalar\/LICM.h"/a\
-          #include "llvm/Transforms/Obfuscation/BogusControlFlow.h"\
-          #include "llvm/Transforms/Obfuscation/Flattening.h"\
-          #include "llvm/Transforms/Obfuscation/Substitution.h"\
-          #include "llvm/Transforms/Obfuscation/StringObfuscation.h"' "$PASSBUILDER"
+            "$PY" -c 'from pathlib import Path; path=Path("llvm/lib/Passes/PassBuilder.cpp"); text=path.read_text(); anchor="#include \"llvm/Transforms/Scalar/LICM.h\"\n"; insert="#include \"llvm/Transforms/Obfuscation/BogusControlFlow.h\"\n#include \"llvm/Transforms/Obfuscation/Flattening.h\"\n#include \"llvm/Transforms/Obfuscation/Substitution.h\"\n#include \"llvm/Transforms/Obfuscation/StringObfuscation.h\"\n"; path.write_text(text.replace(anchor, anchor + insert, 1)) if anchor in text and "BogusControlFlow.h" not in text else None'
+          grep -q "BogusControlFlow.h" "$PASSBUILDER" || \
+            { echo "❌ Failed to add Obfuscation includes to PassBuilder.cpp"; exit 1; }
           
           grep -q '"bcf"' "$PASSBUILDER" || \
-            sed -i '/FUNCTION_PASS("loop-unroll", LoopUnrollPass())/a\
-            \ \ FUNCTION_PASS("bcf", BogusControlFlow())\
-            \ \ FUNCTION_PASS("fla", Flattening())\
-            \ \ FUNCTION_PASS("sub", Substitution())' "$PASSBUILDER"
+            "$PY" -c 'from pathlib import Path; path=Path("llvm/lib/Passes/PassBuilder.cpp"); text=path.read_text(); anchor="  FUNCTION_PASS(\"loop-unroll\", LoopUnrollPass())\n"; insert="  FUNCTION_PASS(\"bcf\", BogusControlFlow())\n  FUNCTION_PASS(\"fla\", Flattening())\n  FUNCTION_PASS(\"sub\", Substitution())\n"; path.write_text(text.replace(anchor, anchor + insert, 1)) if anchor in text and "FUNCTION_PASS(\"bcf\", BogusControlFlow())" not in text else None'
+          grep -q '"bcf"' "$PASSBUILDER" || \
+            { echo "❌ Failed to register bcf/fla/sub function passes"; exit 1; }
           
           grep -q '"sobf"' "$PASSBUILDER" || \
-            sed -i '/MODULE_PASS("verify", VerifierPass())/a\
-            \ \ MODULE_PASS("sobf", StringObfuscation())' "$PASSBUILDER"
+            "$PY" -c 'from pathlib import Path; path=Path("llvm/lib/Passes/PassBuilder.cpp"); text=path.read_text(); anchor="  MODULE_PASS(\"verify\", VerifierPass())\n"; insert="  MODULE_PASS(\"sobf\", StringObfuscation())\n"; path.write_text(text.replace(anchor, anchor + insert, 1)) if anchor in text and "MODULE_PASS(\"sobf\", StringObfuscation())" not in text else None'
+          grep -q '"sobf"' "$PASSBUILDER" || \
+            { echo "❌ Failed to register sobf module pass"; exit 1; }
           
-          echo "✅ Passes registered"
+          echo "✅ All passes registered"
+          echo ""
+          echo "Verification:"
+          grep -c "BogusControlFlow\|Flattening\|Substitution\|StringObfuscation" "$PASSBUILDER"
+          grep '"bcf"\|"fla"\|"sub"\|"sobf"' "$PASSBUILDER"
 
       # ============================================
-      # STEP 6: Setup MSVC + Tools
+      # STEP 6: Setup MSVC + Build Tools
       # ============================================
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -232,8 +258,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: llvm-project/build
-          key: ollvm-build-${{ runner.os }}-v2-${{ hashFiles('llvm-project/llvm/lib/Passes/PassBuilder.cpp', 'llvm-project/llvm/lib/Transforms/Obfuscation/*.h') }}
-          restore-keys: ollvm-build-${{ runner.os }}-v2-
+          key: ollvm-build-${{ runner.os }}-v3-${{ hashFiles('llvm-project/llvm/lib/Passes/PassBuilder.cpp', 'llvm-project/llvm/lib/Transforms/Obfuscation/*.h') }}
+          restore-keys: ollvm-build-${{ runner.os }}-v3-
 
       # ============================================
       # STEP 7: Configure (skip if cached)
@@ -272,18 +298,37 @@ jobs:
             cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;lld" -DLLVM_TARGETS_TO_BUILD="AArch64;ARM;X86" -DLLVM_ENABLE_ASSERTIONS=OFF -DLLVM_INCLUDE_TESTS=OFF -DLLVM_BUILD_TESTS=OFF -DLLVM_BUILD_TOOLS=ON ../llvm
           )
           ninja -j 4 clang lld
-          if not exist bin\clang.exe exit /b 1
-          bin\clang.exe --version
+          if errorlevel 1 exit /b 1
+          if exist bin\clang.exe (
+            set CLANG_BIN=bin\clang.exe
+          ) else if exist bin\Release\clang.exe (
+            set CLANG_BIN=bin\Release\clang.exe
+          ) else (
+            echo clang.exe not found after build
+            exit /b 1
+          )
+          "%CLANG_BIN%" --version
           echo ✅ Build complete!
 
       # ============================================
       # STEP 9: Integrate OLLVM into NDK
       # ============================================
-      - name: Integrate
+      - name: Integrate into NDK
         shell: cmd
         run: |
           set NDK_BIN=ndk\android-ndk-r26d\toolchains\llvm\prebuilt\windows-x86_64\bin
-          set SRC=llvm-project\build\bin
+          if exist llvm-project\build\bin\clang.exe (
+            set SRC=llvm-project\build\bin
+          ) else if exist llvm-project\build\bin\Release\clang.exe (
+            set SRC=llvm-project\build\bin\Release
+          ) else (
+            echo clang.exe not found in LLVM build output
+            exit /b 1
+          )
+          if not exist "%NDK_BIN%" (
+            echo NDK toolchain directory not found
+            exit /b 1
+          )
           copy /Y "%NDK_BIN%\clang.exe" "%NDK_BIN%\clang.original.exe"
           copy /Y "%NDK_BIN%\clang++.exe" "%NDK_BIN%\clang++.original.exe"
           copy /Y "%SRC%\clang.exe" "%NDK_BIN%\clang.exe"
